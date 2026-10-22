@@ -56,6 +56,9 @@ These independently check syntax/module shape, behavioral acceptance, and exact
 one-file change scope. The behavior validator executes candidate Python and must
 run inside the approved execution sandbox without credentials or network access.
 None of the validators is a replacement for that sandbox or human review.
+The scope validator deliberately ignores the `.git` directory. A publisher must
+use its own trusted Git metadata and must not trust or reuse candidate Git
+configuration, hooks, remotes, or credentials.
 
 CI is additional visible evidence, not a substitute for the trusted validators.
 The task-phase behavior gate must fail while `normalize_labels` is absent from

@@ -48,11 +48,15 @@ def main():
         for raw, expected in cases:
             original = list(raw)
             actual = module.normalize_labels(raw)
+            require(actual is not raw, "batch normalization must return a new list")
             require(type(actual) is list and actual == expected, "batch normalization mismatch")
             require(raw == original, "input list was mutated")
             require(module.normalize_labels(raw) == expected, "batch normalization is not deterministic")
         for raw in (None, "alpha", ("alpha",), {"alpha"}, ["alpha", 1], [None]):
+            original = list(raw) if isinstance(raw, list) else None
             rejects_type_error(lambda raw=raw: module.normalize_labels(raw))
+            if isinstance(raw, list):
+                require(raw == original, "invalid input list was mutated")
     print("PASS independent behavior " + sys.argv[2])
 
 
