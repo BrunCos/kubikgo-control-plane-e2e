@@ -1,0 +1,38 @@
+name: Synthetic checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synthetic-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic-checks:
+    name: synthetic-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - name: Checkout synthetic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+          set-safe-directory: false
+      - name: Baseline unit tests
+        run: python3 -I -B -m unittest discover -s . -v
+      - name: Syntax and independent baseline behavior
+        run: |
+          python3 -I -B validator01_syntax.py .
+          python3 -I -B validator02_behavior.py . baseline
