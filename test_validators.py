@@ -35,11 +35,17 @@ class ValidatorTests(unittest.TestCase):
     def scope(self):
         return self.invoke("validator03_scope.py", str(self.trusted / "immutable-files.sha256"))
 
-    def write_synthetic_batch_candidate(self, *, return_identity=False, mutate_invalid=False):
-        """Create a disposable reference or deliberately faulty candidate."""
+    def source_for_batch_fixture(self):
+        """Make room for a fixture whether the submitted task exists yet or not."""
         source = self.workspace / "src" / "task_intake.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
         tree.body = [node for node in tree.body if not isinstance(node, ast.FunctionDef) or node.name != "normalize_labels"]
+        source.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+        return source
+
+    def write_synthetic_batch_candidate(self, *, return_identity=False, mutate_invalid=False):
+        """Create a disposable reference or deliberately faulty candidate."""
+        source = self.source_for_batch_fixture()
         invalid_statement = "values.clear(); raise TypeError('invalid item')" if mutate_invalid else "raise TypeError('invalid item')"
         return_statement = "return values if result == values else result" if return_identity else "return result"
         implementation = f'''
@@ -58,7 +64,8 @@ def normalize_labels(values: list[str]) -> list[str]:
             seen.add(key)
     {return_statement}
 '''
-        source.write_text(ast.unparse(tree) + "\n" + implementation, encoding="utf-8")
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write(implementation)
 
     def test_baseline_scope_is_valid(self):
         result = self.scope()
@@ -89,7 +96,7 @@ def normalize_labels(values: list[str]) -> list[str]:
         self.assertNotEqual(result.returncode, 0)
 
     def test_nested_imports_are_rejected_without_execution(self):
-        source = self.workspace / "src" / "task_intake.py"
+        source = self.source_for_batch_fixture()
         original = source.read_text(encoding="utf-8")
         for statement in ("import os", "from pathlib import Path"):
             with self.subTest(statement=statement):
@@ -99,7 +106,7 @@ def normalize_labels(values: list[str]) -> list[str]:
                 self.assertIn("imports are not allowed", result.stderr)
 
     def test_function_defaults_are_rejected_without_execution(self):
-        source = self.workspace / "src" / "task_intake.py"
+        source = self.source_for_batch_fixture()
         original = source.read_text(encoding="utf-8")
         for default in ("[]", "print('synthetic-default-side-effect')"):
             with self.subTest(default=default):
@@ -110,7 +117,7 @@ def normalize_labels(values: list[str]) -> list[str]:
                 self.assertNotIn("synthetic-default-side-effect", result.stdout)
 
     def test_argument_annotation_call_is_rejected_without_execution(self):
-        source = self.workspace / "src" / "task_intake.py"
+        source = self.source_for_batch_fixture()
         with source.open("a", encoding="utf-8") as handle:
             handle.write("\ndef normalize_labels(values: print('synthetic-argument-side-effect')) -> list[str]:\n    return []\n")
         result = self.invoke("validator01_syntax.py")
@@ -119,7 +126,7 @@ def normalize_labels(values: list[str]) -> list[str]:
         self.assertNotIn("synthetic-argument-side-effect", result.stdout)
 
     def test_return_annotation_call_is_rejected_without_execution(self):
-        source = self.workspace / "src" / "task_intake.py"
+        source = self.source_for_batch_fixture()
         with source.open("a", encoding="utf-8") as handle:
             handle.write("\ndef normalize_labels(values: list[str]) -> print('synthetic-return-side-effect'):\n    return []\n")
         result = self.invoke("validator01_syntax.py")
@@ -127,11 +134,48 @@ def normalize_labels(values: list[str]) -> list[str]:
         self.assertIn("fixed typed signatures", result.stderr)
         self.assertNotIn("synthetic-return-side-effect", result.stdout)
 
+    def test_dynamic_import_builtin_is_rejected_without_execution(self):
+        source = self.source_for_batch_fixture()
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write("\ndef normalize_labels(values: list[str]) -> list[str]:\n    return __import__('socket')\n")
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            "dunder names are not allowed" in result.stderr
+            or "call is outside the bounded allowlist" in result.stderr
+        )
+
+    def test_file_write_and_trusted_tree_mutation_are_rejected_without_execution(self):
+        sentinel = self.trusted / "validator03_scope.py"
+        before = sentinel.read_bytes()
+        source = self.source_for_batch_fixture()
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ndef normalize_labels(values: list[str]) -> list[str]:\n"
+                "    open('../trusted/validator03_scope.py', 'w').write('replaced')\n"
+                "    return []\n"
+            )
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sentinel.read_bytes(), before)
+
+    def test_unapproved_mutating_method_is_rejected_without_execution(self):
+        source = self.source_for_batch_fixture()
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ndef normalize_labels(values: list[str]) -> list[str]:\n"
+                "    values.clear()\n"
+                "    return []\n"
+            )
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            "unsafe method call: clear" in result.stderr
+            or "call is outside the bounded allowlist" in result.stderr
+        )
+
     def test_task_gate_requires_the_new_function(self):
-        source = self.workspace / "src" / "task_intake.py"
-        tree = ast.parse(source.read_text(encoding="utf-8"))
-        tree.body = [node for node in tree.body if not isinstance(node, ast.FunctionDef) or node.name != "normalize_labels"]
-        source.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
+        self.source_for_batch_fixture()
         result = self.invoke("validator02_behavior.py", "task")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("normalize_labels is missing", result.stderr)
