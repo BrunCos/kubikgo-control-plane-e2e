@@ -21,18 +21,48 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONNOUSERSITE: '1'
+      TASK_PR: ${{ github.event_name == 'pull_request' && !(github.head_ref == 'ci/trusted-task-gate-bootstrap' && github.event.pull_request.base.sha == '8a4b238f0fbe599bf4bd4c0e8c43106a9008c070') }}
     steps:
-      - name: Checkout synthetic source
+      - name: Check repository and base
+        env:
+          ORIGIN: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            test "$ORIGIN" = "$GITHUB_REPOSITORY"
+          else
+            test "$GITHUB_REF" = refs/heads/main
+          fi
+      - name: Checkout base validators for task PRs
+        if: env.TASK_PR == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
           persist-credentials: false
           fetch-depth: 1
           submodules: false
           lfs: false
           set-safe-directory: false
-      - name: Baseline unit tests
-        run: python3 -I -B -m unittest discover -s . -v
-      - name: Syntax and independent baseline behavior
+      - name: Checkout the exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+          set-safe-directory: false
+      - name: Validate a task against the protected base
+        if: env.TASK_PR == 'true'
         run: |
-          python3 -I -B validator01_syntax.py .
-          python3 -I -B validator02_behavior.py . baseline
+          /usr/bin/env -i PATH=/usr/bin:/bin timeout 30s python3 -I -S -B trusted/validator03_scope.py candidate trusted/immutable-files.sha256
+          /usr/bin/env -i PATH=/usr/bin:/bin timeout 30s python3 -I -S -B trusted/validator01_syntax.py candidate
+          /usr/bin/env -i PATH=/usr/bin:/bin timeout 30s python3 -I -S -B trusted/validator02_behavior.py candidate task
+      - name: Verify the administrative bootstrap or manual baseline
+        if: env.TASK_PR != 'true'
+        run: |
+          /usr/bin/env -i PATH=/usr/bin:/bin timeout 30s python3 -I -S -B candidate/validator01_syntax.py candidate
+          /usr/bin/env -i PATH=/usr/bin:/bin timeout 30s python3 -I -S -B candidate/validator02_behavior.py candidate baseline
+      - name: Run the unit tests
+        run: /usr/bin/env -i PATH=/usr/bin:/bin timeout 90s python3 -I -S -B -m unittest discover -s candidate -v
