@@ -127,6 +127,46 @@ def normalize_labels(values: list[str]) -> list[str]:
         self.assertIn("fixed typed signatures", result.stderr)
         self.assertNotIn("synthetic-return-side-effect", result.stdout)
 
+    def test_dynamic_import_builtin_is_rejected_without_execution(self):
+        source = self.workspace / "src" / "task_intake.py"
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write("\ndef normalize_labels(values: list[str]) -> list[str]:\n    return __import__('socket')\n")
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            "dunder names are not allowed" in result.stderr
+            or "call is outside the bounded allowlist" in result.stderr
+        )
+
+    def test_file_write_and_trusted_tree_mutation_are_rejected_without_execution(self):
+        sentinel = self.trusted / "validator03_scope.py"
+        before = sentinel.read_bytes()
+        source = self.workspace / "src" / "task_intake.py"
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ndef normalize_labels(values: list[str]) -> list[str]:\n"
+                "    open('../trusted/validator03_scope.py', 'w').write('replaced')\n"
+                "    return []\n"
+            )
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sentinel.read_bytes(), before)
+
+    def test_unapproved_mutating_method_is_rejected_without_execution(self):
+        source = self.workspace / "src" / "task_intake.py"
+        with source.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ndef normalize_labels(values: list[str]) -> list[str]:\n"
+                "    values.clear()\n"
+                "    return []\n"
+            )
+        result = self.invoke("validator01_syntax.py")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            "unsafe method call: clear" in result.stderr
+            or "call is outside the bounded allowlist" in result.stderr
+        )
+
     def test_task_gate_requires_the_new_function(self):
         source = self.workspace / "src" / "task_intake.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
